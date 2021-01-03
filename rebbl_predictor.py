@@ -9,7 +9,7 @@ import tabulate
 from functools import total_ordering
 from typing import Optional, Callable
 
-from _rebbl_predictor import SeasonScore, random_score
+from _rebbl_predictor import SeasonScore, random_score, Game
 
 tabulate.PRESERVE_WHITESPACE = True
 
@@ -27,28 +27,28 @@ class SeasonScores(defaultdict):
 def score_season(games):
     scores = SeasonScores()
     for game in games:
-        scores[game["homeTeamIndex"]].add_game(game, True)
-        scores[game["awayTeamIndex"]].add_game(game, False)
+        scores[game.homeTeamIndex].add_game(game, True)
+        scores[game.awayTeamIndex].add_game(game, False)
 
     return scores
 
 
 def predict_games(predictor, games):
     for game in games:
-        game["homeScore"] = predictor(game["homeTeamName"])
-        game["awayScore"] = predictor(game["awayTeamName"])
+        game.homeScore = predictor(game.homeTeam)
+        game.awayScore = predictor(game.awayTeam)
 
 
-def sum_stats(old, new):
+def sum_stats(teams, old, new):
     return {
-        team: SeasonScore(
-            team,
-            old[team].points + new[team].points,
-            old[team].tdd + new[team].tdd,
-            old[team].losses + new[team].losses,
-            old[team].head_to_head | new[team].head_to_head,
+        teamIdx: SeasonScore(
+            teamIdx,
+            old[teamIdx].points + new[teamIdx].points,
+            old[teamIdx].tdd + new[teamIdx].tdd,
+            old[teamIdx].losses + new[teamIdx].losses,
+            old[teamIdx].head_to_head | new[teamIdx].head_to_head,
         )
-        for team in old.keys() | new.keys()
+        for teamIdx in range(len(teams))
     }
 
 
@@ -82,19 +82,32 @@ def predict_season(
         game["homeTeamIndex"] = team_indexes[game["homeTeamName"]]
         game["awayTeamIndex"] = team_indexes[game["awayTeamName"]]
 
+    season = [
+        Game(
+            game["homeTeamName"],
+            -1 if game["homeScore"] is None else game["homeScore"],
+            game["homeTeamIndex"],
+            game["awayTeamName"],
+            -1 if game["awayScore"] is None else game["awayScore"],
+            game["awayTeamIndex"],
+            game["round"],
+        )
+        for game in season
+    ]
+
     played_games = [
         game
         for game in season
-        if game["homeScore"] is not None
-        and game["awayScore"] is not None
-        and (as_of is None or game["round"] <= as_of)
+        if game.homeScore >= 0
+        and game.awayScore >= 0
+        and (as_of is None or game.round <= as_of)
     ]
     remaining_games = [
         game
         for game in season
-        if game["homeScore"] is None
-        or game["awayScore"] is None
-        or (as_of is not None and game["round"] > as_of)
+        if game.homeScore == -1
+        or game.awayScore == -1
+        or (as_of is not None and game.round > as_of)
     ]
 
     current_stats = score_season(played_games)
@@ -103,7 +116,7 @@ def predict_season(
     for _ in range(iterations):
         predict_games(predictor, remaining_games)
         remaining_stats = score_season(remaining_games)
-        total_stats = sum_stats(current_stats, remaining_stats)
+        total_stats = sum_stats(teams, current_stats, remaining_stats)
         sorted_stats = sort_stats(total_stats)
         assert sorted_stats == sorted(sorted_stats, key=lambda x: x[1], reverse=True)
         outcomes.append(sorted_stats)
@@ -127,7 +140,7 @@ if __name__ == "__main__":
     league = "REBBL - REL"
     season = "season 15"
     division = "Season 15 - Division 3B"
-    results_table = predict_season(league, season, division, iterations=10000, as_of=5)
+    results_table = predict_season(league, season, division, iterations=10000, as_of=4)
     team_order = [
         team
         for (team, _) in sorted(results_table.items(), key=lambda x: x[1], reverse=True)
