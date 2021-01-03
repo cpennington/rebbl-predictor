@@ -9,7 +9,7 @@ import tabulate
 from functools import total_ordering
 from typing import Optional, Callable
 
-from _rebbl_predictor import SeasonScore
+from _rebbl_predictor import SeasonScore, random_score
 
 tabulate.PRESERVE_WHITESPACE = True
 
@@ -50,22 +50,6 @@ def sum_stats(old, new):
         )
         for team in old.keys() | new.keys()
     }
-
-
-def random_score(team):
-    choice = random.random()
-    if choice < 0.25:
-        return 0
-    elif choice < 0.55:
-        return 1
-    elif choice < 0.85:
-        return 2
-    elif choice < 0.95:
-        return 3
-    elif choice < 0.98:
-        return 4
-    else:
-        return 5
 
 
 def sort_stats(stats):

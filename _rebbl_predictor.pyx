@@ -1,3 +1,4 @@
+from libc.stdlib cimport rand, RAND_MAX
 
 cdef class SeasonScore:
     cdef public int team
@@ -61,3 +62,18 @@ cdef class SeasonScore:
     def __repr__(self):
         return f"SeasonScore({self.team!r}, {self.points!r}, {self.tdd!r}, {self.losses!r}, {self.head_to_head!r})"
 
+
+cpdef int random_score(str team):
+    choice = rand()/RAND_MAX
+    if choice < 0.25:
+        return 0
+    elif choice < 0.55:
+        return 1
+    elif choice < 0.85:
+        return 2
+    elif choice < 0.95:
+        return 3
+    elif choice < 0.98:
+        return 4
+    else:
+        return 5
