@@ -83,6 +83,11 @@ cdef class SeasonScore:
         other  = <SeasonScore?>other
         return self._eq(other)
 
+    cpdef copy(self):
+        return SeasonScore(
+            self.teamIdx, self.points, self.tdd, self.losses, self.head_to_head
+        )
+
     def __repr__(self):
         return f"SeasonScore({self.teamIdx!r}, {self.points!r}, {self.tdd!r}, {self.losses!r}, {self.head_to_head!r})"
 

@@ -15,7 +15,7 @@ tabulate.PRESERVE_WHITESPACE = True
 
 
 class SeasonScores(defaultdict):
-    def __init__(self, default_factory=None, *args):
+    def __init__(self, *args):
         super().__init__(None, *args)
 
     def __missing__(self, key):
@@ -23,9 +23,15 @@ class SeasonScores(defaultdict):
         self[key] = score
         return score
 
+    def copy(self):
+        return type(self)((key, score.copy()) for key, score in self.items())
 
-def score_season(games):
-    scores = SeasonScores()
+
+def score_season(games, initial_scores=None):
+    if initial_scores:
+        scores = initial_scores.copy()
+    else:
+        scores = SeasonScores()
     for game in games:
         scores[game.homeTeamIndex].add_game(game, True)
         scores[game.awayTeamIndex].add_game(game, False)
@@ -115,8 +121,8 @@ def predict_season(
     outcomes = []
     for _ in range(iterations):
         predict_games(predictor, remaining_games)
-        remaining_stats = score_season(remaining_games)
-        total_stats = sum_stats(teams, current_stats, remaining_stats)
+        total_stats = score_season(remaining_games, initial_scores=current_stats)
+        # total_stats = sum_stats(teams, current_stats, remaining_stats)
         sorted_stats = sort_stats(total_stats)
         assert sorted_stats == sorted(sorted_stats, key=lambda x: x[1], reverse=True)
         outcomes.append(sorted_stats)
