@@ -7,7 +7,7 @@ cdef class SeasonScore:
     cdef public int losses
     cdef public int head_to_head
 
-    def __init__(self, team, points=0, tdd=0, losses=0, head_to_head=0):
+    def __cinit__(self, team, points=0, tdd=0, losses=0, head_to_head=0):
         self.team = team
         self.points = points
         self.tdd = tdd
