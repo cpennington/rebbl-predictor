@@ -18,17 +18,16 @@ class SeasonScore:
     points: int
     tdd: int
     losses: int
-    head_to_head: set[str]
+    head_to_head: int
 
-    __slots__ = ('team', 'points', 'tdd', 'losses', 'head_to_head')
+    __slots__ = ("team", "points", "tdd", "losses", "head_to_head")
 
-    def __init__(self, team, points=0, tdd=0, losses=0, head_to_head=None):
+    def __init__(self, team, points=0, tdd=0, losses=0, head_to_head=0):
         self.team = team
         self.points = points
         self.tdd = tdd
         self.losses = losses
-        self.head_to_head = head_to_head or set()
-
+        self.head_to_head = head_to_head
 
     def add_game(self, game, home):
         homeScore = game["homeScore"]
@@ -36,7 +35,7 @@ class SeasonScore:
         if home:
             if homeScore > awayScore:
                 self.points += 3
-                self.head_to_head.add(game["awayTeamName"])
+                self.head_to_head |= 1 << game["awayTeamIndex"]
             elif homeScore == awayScore:
                 self.points += 1
             else:
@@ -45,7 +44,7 @@ class SeasonScore:
         else:
             if homeScore < awayScore:
                 self.points += 3
-                self.head_to_head.add(game["homeTeamName"])
+                self.head_to_head |= 1 << game["awayTeamIndex"]
             elif homeScore == awayScore:
                 self.points += 1
             else:
@@ -53,7 +52,9 @@ class SeasonScore:
             self.tdd += awayScore - homeScore
 
     def copy(self):
-        return SeasonScore(self.team, self.points, self.tdd, self.losses, self.head_to_head.copy())
+        return SeasonScore(
+            self.team, self.points, self.tdd, self.losses, self.head_to_head.copy()
+        )
 
     def __lt__(self, other):
         if self.points != other.points:
@@ -62,18 +63,19 @@ class SeasonScore:
             return self.tdd < other.tdd
         if self.losses != other.losses:
             return self.losses > other.losses
-        return self.team in other.head_to_head
+        return 1 << self.team & other.head_to_head
+
     def __eq__(self, other):
         return (
-            self.points == other.points and
-            self.tdd == other.tdd and
-            self.losses == other.losses and
-            self.team not in other.head_to_head and
-            other.team not in self.head_to_head
+            self.points == other.points
+            and self.tdd == other.tdd
+            and self.losses == other.losses
+            and not (1 << self.team & other.head_to_head)
+            and not (1 << other.team & self.head_to_head)
         )
 
     def __repr__(self):
-        return f'SeasonScore({self.team!r}, {self.points!r}, {self.tdd!r}, {self.losses!r}, {self.head_to_head!r})'
+        return f"SeasonScore({self.team!r}, {self.points!r}, {self.tdd!r}, {self.losses!r}, {self.head_to_head!r})"
 
 
 class SeasonScores(defaultdict):
@@ -89,16 +91,16 @@ class SeasonScores(defaultdict):
 def score_season(games):
     scores = SeasonScores()
     for game in games:
-        scores[game["homeTeamName"]].add_game(game, True)
-        scores[game["awayTeamName"]].add_game(game, False)
+        scores[game["homeTeamIndex"]].add_game(game, True)
+        scores[game["awayTeamIndex"]].add_game(game, False)
 
     return scores
 
 
 def predict_games(predictor, games):
     for game in games:
-        game["homeScore"] = predictor(game["homeTeamName"])
-        game["awayScore"] = predictor(game["awayTeamName"])
+        game["homeScore"] = predictor(game["homeTeamIndex"])
+        game["awayScore"] = predictor(game["awayTeamIndex"])
 
 
 def sum_stats(old, new):
@@ -112,6 +114,7 @@ def sum_stats(old, new):
         )
         for team in old.keys() | new.keys()
     }
+
 
 def random_score(team):
     choice = random.random()
@@ -128,30 +131,49 @@ def random_score(team):
     else:
         return 5
 
+
 def sort_stats(stats):
     return sorted(list(stats.items()), key=lambda x: x[1], reverse=True)
 
+
 def season_teams(games):
-    return {
-        game['homeTeamName'] for game in games
-    } | {
-        game['awayTeamName'] for game in games
+    return {game["homeTeamName"] for game in games} | {
+        game["awayTeamName"] for game in games
     }
 
-def predict_season(league: str, season: str, division: str, *, as_of: Optional[int]=None, iterations: int=10000, predictor: Callable=random_score):
+
+def predict_season(
+    league: str,
+    season: str,
+    division: str,
+    *,
+    as_of: Optional[int] = None,
+    iterations: int = 10000,
+    predictor: Callable = random_score,
+):
     resp = requests.get(
         f"https://rebbl.net/api/v2/division/{league}/{season}/{division}/slim"
     )
 
     season = resp.json()
+    teams = sorted(season_teams(season))
+    team_indexes = {team: index for index, team in enumerate(teams)}
+    for game in season:
+        game["homeTeamIndex"] = team_indexes[game["homeTeamName"]]
+        game["awayTeamIndex"] = team_indexes[game["awayTeamName"]]
+
     played_games = [
         game
         for game in season
-        if game["homeScore"] is not None and game["awayScore"] is not None
+        if game["homeScore"] is not None
+        and game["awayScore"] is not None
         and (as_of is None or game["round"] <= as_of)
     ]
     remaining_games = [
-        game for game in season if game["homeScore"] is None or game["awayScore"] is None
+        game
+        for game in season
+        if game["homeScore"] is None
+        or game["awayScore"] is None
         or (as_of is not None and game["round"] > as_of)
     ]
 
@@ -167,14 +189,15 @@ def predict_season(league: str, season: str, division: str, *, as_of: Optional[i
         outcomes.append(sorted_stats)
 
     outcome_positions = (
-        enumerate((team_name for team_name, _ in outcome))
-        for outcome in outcomes
+        enumerate((team_name for team_name, _ in outcome)) for outcome in outcomes
     )
     outcome_counts = Counter(itertools.chain.from_iterable(outcome_positions))
 
-    teams = season_teams(season)
     results_table = {
-        team: [outcome_counts[(i, team)]/iterations for i in range(len(teams))]
+        team: [
+            outcome_counts[(i, team_indexes[team])] / iterations
+            for i in range(len(teams))
+        ]
         for team in teams
     }
     return results_table
@@ -185,9 +208,15 @@ if __name__ == "__main__":
     season = "season 15"
     division = "Season 15 - Division 3B"
     results_table = predict_season(league, season, division, iterations=10000, as_of=5)
-    team_order = [team for (team, _) in sorted(results_table.items(), key=lambda x: x[1], reverse=True)]
+    team_order = [
+        team
+        for (team, _) in sorted(results_table.items(), key=lambda x: x[1], reverse=True)
+    ]
 
-    print(tabulate.tabulate(
-        [results_table[team] for team in team_order],
-        showindex=team_order,
-        floatfmt='2.0%'))
+    print(
+        tabulate.tabulate(
+            [results_table[team] for team in team_order],
+            showindex=team_order,
+            floatfmt="2.0%",
+        )
+    )
