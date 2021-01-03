@@ -1,0 +1,7 @@
+requests
+cython
+pip-tools
+black
+sparklines
+tabulate
+mypy
