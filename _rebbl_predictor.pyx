@@ -14,13 +14,15 @@ cdef class SeasonScore:
         self.losses = losses
         self.head_to_head = head_to_head
 
-    def add_game(self, game, home):
-        homeScore = game["homeScore"]
-        awayScore = game["awayScore"]
+    cpdef add_game(self, game, bint home):
+        cdef int homeScore = game["homeScore"]
+        cdef int awayScore = game["awayScore"]
+        cdef int homeIndex = game["homeTeamIndex"]
+        cdef int awayIndex = game["awayTeamIndex"]
         if home:
             if homeScore > awayScore:
                 self.points += 3
-                self.head_to_head |= 1 << game["awayTeamIndex"]
+                self.head_to_head |= 1 << awayIndex
             elif homeScore == awayScore:
                 self.points += 1
             else:
@@ -29,19 +31,14 @@ cdef class SeasonScore:
         else:
             if homeScore < awayScore:
                 self.points += 3
-                self.head_to_head |= 1 << game["awayTeamIndex"]
+                self.head_to_head |= 1 << homeIndex
             elif homeScore == awayScore:
                 self.points += 1
             else:
                 self.losses += 1
             self.tdd += awayScore - homeScore
 
-    def copy(self):
-        return SeasonScore(
-            self.team, self.points, self.tdd, self.losses, self.head_to_head.copy()
-        )
-
-    def __lt__(self, other):
+    cdef bint _lt(self, SeasonScore other):
         if self.points != other.points:
             return self.points < other.points
         if self.tdd != other.tdd:
@@ -50,7 +47,11 @@ cdef class SeasonScore:
             return self.losses > other.losses
         return 1 << self.team & other.head_to_head
 
-    def __eq__(self, other):
+    def __lt__(self, other):
+        other  = <SeasonScore?>other
+        return self._lt(other)
+
+    cdef bint _eq(self, SeasonScore other):
         return (
             self.points == other.points
             and self.tdd == other.tdd
@@ -58,6 +59,10 @@ cdef class SeasonScore:
             and not (1 << self.team & other.head_to_head)
             and not (1 << other.team & self.head_to_head)
         )
+
+    def __eq__(self, other):
+        other  = <SeasonScore?>other
+        return self._eq(other)
 
     def __repr__(self):
         return f"SeasonScore({self.team!r}, {self.points!r}, {self.tdd!r}, {self.losses!r}, {self.head_to_head!r})"
