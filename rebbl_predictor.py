@@ -167,46 +167,71 @@ def predict_season(
     return results_table
 
 
+RACES = [
+    "Amazon",
+    "Bretonnian",
+    "Chaos",
+    "ChaosDwarf",
+    "DarkElf",
+    "Dwarf",
+    "ElvenUnion",
+    "Goblin",
+    "Halfling",
+    "HighElf",
+    "Human",
+    "Khemri",
+    "Kislev",
+    "Lizardman",
+    "Necromantic",
+    "Norse",
+    "Nurgle",
+    "Orc",
+    "Ogre",
+    "Skaven",
+    "Undead",
+    "UnderworldDenizens",
+    "Vampire",
+    "WoodElf",
+]
+
+
+def win_chance_from_stats(stats, opp_race):
+    win_p = 0.5
+    win_p = (win_p * stats["S15_p"]) / (
+        win_p * stats["S15_p"] + (1 - win_p) * (1 - stats["S15_p"])
+    )
+    win_p = (win_p * stats["Total_p"]) / (
+        win_p * stats["Total_p"] + (1 - win_p) * (1 - stats["Total_p"])
+    )
+    win_p = win_p * stats[f"{opp_race}_p"]
+
+    return win_p
+
+
 def prep_row(row):
-    if row['race'] == 'ProElf':
-        row['race'] = 'ElvenUnion'
-    if row['race'] == 'Bretonnia':
-        row['race'] = 'Bretonnian'
-    for col, weight in (
+    if row["race"] == "ProElf":
+        row["race"] = "ElvenUnion"
+    if row["race"] == "Bretonnia":
+        row["race"] = "Bretonnian"
+    for col, weight in [
         ("S15", 50),
         ("Total", 100),
-        ("Amazon", 30),
-        ("Bretonnian", 30),
-        ("Chaos", 30),
-        ("ChaosDwarf", 30),
-        ("DarkElf", 30),
-        ("Dwarf", 30),
-        ("ElvenUnion", 30),
-        ("Goblin", 30),
-        ("Halfling", 30),
-        ("HighElf", 30),
-        ("Human", 30),
-        ("Khemri", 30),
-        ("Kislev", 30),
-        ("Lizardman", 30),
-        ("Necromantic", 30),
-        ("Norse", 30),
-        ("Nurgle", 30),
-        ("Orc", 30),
-        ("Ogre", 30),
-        ("Skaven", 30),
-        ("Undead", 30),
-        ("UnderworldDenizens", 30),
-        ("Vampire", 30),
-        ("WoodElf", 30),
-    ):
+    ] + [(race, 30) for race in RACES]:
         if row[col]:
             win, tie, loss = (int(val) for val in row[col].split("/"))
         else:
             win = tie = loss = 0
         total = win + tie + loss + weight
-        row[f"{col}_p"] = (win + tie/2 + weight/2)/total
-    return row
+        row[f"{col}_p"] = (win + tie / 2 + weight / 2) / total
+
+    prepped_row = {
+        "team": row["team"],
+        "race": row["race"],
+    }
+    for race in RACES:
+        prepped_row[race] = win_chance_from_stats(row, race)
+
+    return prepped_row
 
 
 coach_stats = {
@@ -215,22 +240,11 @@ coach_stats = {
 }
 
 
-def win_chance_from_stats(stats, opp_race):
-    win_p = 0.5
-    win_p = (win_p * stats['S15_p']) / (win_p * stats['S15_p'] + (1 - win_p) * (1 - stats['S15_p']))
-    win_p = (win_p * stats['Total_p']) / (
-        win_p * stats['Total_p'] + (1 - win_p) * (1 - stats['Total_p'])
-    )
-    win_p = (win_p * stats[f'{opp_race}_p'])
-
-    return win_p
-
-
 def predict_from_stats(home, away):
     home_stats = coach_stats[home]
     away_stats = coach_stats[away]
-    home_win_p = win_chance_from_stats(home_stats, away_stats['race'])
-    away_win_p = win_chance_from_stats(away_stats, home_stats['race'])
+    home_win_p = home_stats[away_stats["race"]]
+    away_win_p = home_stats[home_stats["race"]]
 
     home_win_frac = home_win_p / (home_win_p + away_win_p)
     home_win = random.random() < home_win_frac
@@ -266,26 +280,58 @@ def predict_playoffs(
 
     playoffs = predictions["playoffs"]
 
-    for i in range(iterations):
-        round = 1
-        round_matches = round_one_matches.copy()
-        next_round_matches = []
-        while len(round_matches) > 1:
-            for (home1, away1), (home2, away2) in zip(
-                round_matches[0::2], round_matches[1::2]
-            ):
-                winner1 = predict_match(home1, away1, round, i)
-                winner2 = predict_match(home2, away2, round, i)
-                next_round_matches.append((winner1, winner2))
+    prev_results = None
+    while True:
+        results = {
+            (row["round"], row["winner"]): row["count"]
+            for row in predictions.query(
+                """
+                    SELECT
+                        round,
+                        winner,
+                        count(*) AS count
+                    FROM playoffs
+                    WHERE name=:name
+                    GROUP BY 1, 2
+                """,
+                name=name,
+            )
+        }
+        if prev_results is not None:
+            pct_change = [
+                (
+                    (results[(round, winner)] - prev_results.get((round, winner), 1))
+                    / (prev_results.get((round, winner), 1)),
+                    round,
+                    winner,
+                )
+                for (round, winner) in results.keys()
+            ]
+            print(max(pct_change))
+            if max(pct_change)[0] < 0.05:
+                break
 
-            round_matches = next_round_matches
+        prev_results = results
+        for i in range(iterations):
+            round = 1
+            round_matches = round_one_matches.copy()
             next_round_matches = []
-            round += 1
+            while len(round_matches) > 1:
+                for (home1, away1), (home2, away2) in zip(
+                    round_matches[0::2], round_matches[1::2]
+                ):
+                    winner1 = predict_match(home1, away1, round, i)
+                    winner2 = predict_match(home2, away2, round, i)
+                    next_round_matches.append((winner1, winner2))
 
-        (home, away) = round_matches[0]
-        winner = predict_match(home, away, round, i)
-        playoffs.insert_many(pending_rows)
-        pending_rows = []
+                round_matches = next_round_matches
+                next_round_matches = []
+                round += 1
+
+            (home, away) = round_matches[0]
+            winner = predict_match(home, away, round, i)
+            playoffs.insert_many(pending_rows)
+            pending_rows = []
 
 
 def leagues():
@@ -431,9 +477,11 @@ def main_playoffs():
         ("CHEESE + CAKE ", "Trump's Chumps"),
     ]
     predict_playoffs("Season 15 Playoffs", playoff_matches, iterations=100000)
-    print(tabulate.tabulate(list(
-        predictions.query(
-            """
+    print(
+        tabulate.tabulate(
+            list(
+                predictions.query(
+                    """
                 SELECT 
 				    round,
 					"group",
@@ -461,8 +509,10 @@ def main_playoffs():
 				GROUP BY 1, 2
                 ORDER BY 2 DESC, 1 ASC
             """
+                )
+            )
         )
-    )))
+    )
 
 
 def main_cc():
@@ -501,7 +551,7 @@ def main_cc():
         ("We're Slaying 'Em", "We See Dead People, Again"),
         ("The Tiger Lizards", "Gods Of Fate"),
     ]
-    predict_playoffs("Season 15 Challenger Cup", playoff_matches, iterations=100)
+    predict_playoffs("Season 15 Challenger Cup", playoff_matches, iterations=1000)
     results = list(
         predictions.query(
             """
