@@ -6,3 +6,7 @@ sparklines
 tabulate
 mypy
 dataset
+numpy
+typer
+ipython
+jedi==0.17.2

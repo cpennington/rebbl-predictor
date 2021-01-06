@@ -9,10 +9,24 @@ import tabulate
 from functools import total_ordering
 from typing import Optional, Callable
 import dataset
+from numpy.random import default_rng
+import typer
+from enum import Enum
 
 from _rebbl_predictor import SeasonScore, random_score, Game
 
 predictions = dataset.connect("sqlite:///predictions.db")
+rebbl_stats = predictions["rebbl_stats"]
+
+Competition = Enum(
+    "Competition",
+    {
+        row["competition"]: row["competition"]
+        for row in rebbl_stats.distinct("competition")
+    },
+)
+
+RAND = default_rng()
 
 if False:
     import logging
@@ -35,6 +49,9 @@ if False:
 
 
 tabulate.PRESERVE_WHITESPACE = True
+
+
+app = typer.Typer()
 
 
 class SeasonScores(defaultdict):
@@ -221,23 +238,70 @@ def prep_row(row):
             win, tie, loss = (int(val) for val in row[col].split("/"))
         else:
             win = tie = loss = 0
+        row[f"{col}_w"] = win
+        row[f"{col}_t"] = tie
+        row[f"{col}_l"] = loss
         total = win + tie + loss + weight
         row[f"{col}_p"] = (win + tie / 2 + weight / 2) / total
 
-    prepped_row = {
-        "team": row["team"],
-        "race": row["race"],
-    }
     for race in RACES:
-        prepped_row[race] = win_chance_from_stats(row, race)
+        row[race] = win_chance_from_stats(row, race)
 
-    return prepped_row
+    return row
 
 
 coach_stats = {
     **{row["team"]: prep_row(row) for row in predictions["rebbl_playoff_stats"].find()},
     **{row["team"]: prep_row(row) for row in predictions["rebbl_cc_stats"].find()},
 }
+
+_beta_params = {}
+
+
+def beta_params(home, away):
+    if (home, away) not in _beta_params:
+        home_stats = coach_stats[home]
+        away_stats = coach_stats[away]
+        alpha = 1
+        beta = 1
+        home_race = home_stats["race"]
+        away_race = away_stats["race"]
+        for col in ("S15", "Total"):
+            alpha += (
+                home_stats[f"{col}_w"]
+                + home_stats[f"{col}_t"] / 2
+                + away_stats[f"{col}_l"]
+                + away_stats[f"{col}_t"] / 2
+            )
+            beta += (
+                home_stats[f"{col}_l"]
+                + home_stats[f"{col}_t"] / 2
+                + away_stats[f"{col}_w"]
+                + away_stats[f"{col}_t"] / 2
+            )
+        alpha += (
+            home_stats[f"{away_race}_w"]
+            + home_stats[f"{away_race}_t"] / 2
+            + away_stats[f"{home_race}_l"]
+            + away_stats[f"{home_race}_t"] / 2
+        )
+        beta += (
+            home_stats[f"{away_race}_l"]
+            + home_stats[f"{away_race}_t"] / 2
+            + away_stats[f"{home_race}_w"]
+            + away_stats[f"{home_race}_t"] / 2
+        )
+        _beta_params[(home, away)] = (alpha, beta)
+    return _beta_params[(home, away)]
+
+
+def predict_from_beta_dist(home, away):
+    (alpha, beta) = beta_params(home, away)
+    p = RAND.beta(alpha, beta)
+    if p > 0.5:
+        return home, 1
+    else:
+        return away, -1
 
 
 def predict_from_stats(home, away):
@@ -252,9 +316,13 @@ def predict_from_stats(home, away):
 
 
 def predict_playoffs(
-    name, round_one_matches, slot_odds=None, iterations=1000, as_of=None
+    name,
+    round_one_matches,
+    slot_odds=None,
+    iterations=1000,
+    as_of=None,
+    predictor: Callable = random_score,
 ):
-    predictor = predict_from_stats
     pending_rows = []
 
     def predict_match(home, away, round, iteration):
@@ -292,9 +360,11 @@ def predict_playoffs(
                         count(*) AS count
                     FROM playoffs
                     WHERE name=:name
+                    AND predictor=:predictor
                     GROUP BY 1, 2
                 """,
                 name=name,
+                predictor=predictor.__name__,
             )
         }
         if prev_results is not None:
@@ -363,10 +433,21 @@ def playoff(playoff):
     return requests.get(f"https://rebbl.net/api/v1/playoffs/{playoff}").json()
 
 
-def main_season():
-    season = "season 15"
-    as_of = 6
+PREDICTORS = {
+    predictor.__name__: predictor
+    for predictor in (predict_from_beta_dist, predict_from_stats, random_score)
+}
 
+Predictor = Enum("Predictor", {f: f for f in PREDICTORS.keys()})
+
+
+@app.command()
+def predict_season(
+    season: str = "season 15",
+    as_of: Optional[int] = None,
+    predictor: Predictor = Predictor.random_score,
+    iterations: int = 1000,
+):
     playoff_slots = []
     challenger_slots = []
 
@@ -390,7 +471,12 @@ def main_season():
             if "Big O" in league and "Div 3" in division:
                 actual_division = f"{division} "
             results_table = predict_season(
-                actual_league, season, actual_division, iterations=1000, as_of=as_of
+                actual_league,
+                season,
+                actual_division,
+                iterations=iterations,
+                as_of=as_of,
+                predictor=PREDICTORS[predictor],
             )
             team_order = [
                 team
@@ -440,152 +526,65 @@ def main_season():
     pprint.pprint(challenger_slots)
 
 
-def main_playoffs():
-
+@app.command()
+def predict_offseason(
+    name: Competition,
+    iterations: int = 1000,
+    predictor: Predictor = Predictor.random_score,
+):
+    playoff_index = {
+        int(row["index"]): row["team"]
+        for row in rebbl_stats.find(competition=name.value)
+    }
     playoff_matches = [
-        ("Damage Incorporated.", None),
-        ("Return of The Phobias!", "Glart DeathGrips Jr."),
-        ("Blue-tongued Bruisers", "The Spanish lnquisition"),
-        ("Aves of a Feder", "Fecal Fantasy VII"),
-        ("Scaled Actors Guild", "Skull Raisers"),
-        ("Kingslayerzs", "Casters' Curse"),
-        ("Salty Wounds", "The Lubricated Lawmen"),
-        ("Bourbon Street Brawlers", "Ordinary Elves"),
-        ("The Voltrex Vanguard", "The Nec-Romancers"),
-        ("The Descecrators", "Rature Time"),
-        ("Moist Owlettes", "Very High Heels"),
-        ("Funky Flowers", "Deadbeat Ex's"),
-        ("The Tanking Generals", "The Bigger Flex"),
-        ("High Barnet Raiders", "Ratt Utd Legends"),
-        ("Warc Machine III", "Red Bull Chorfing"),
-        ("Smoked and Cured", "The Rat REBBL"),
-        ("Bullcanoe!", None),
-        ("Baltigore Ravens", "Disn'Orc"),
-        ("Cold Cutz", "Taintburglars"),
-        ("Made in Chernobyl", "Jungler Beats"),
-        ("The  Greenhorns", "Entheogenisis"),
-        ("Charlestown Chiefs", "New Romantic XI"),
-        ("Talk Show Terror", "Predatory Pocket Monsters"),
-        ("Knights Saying Ni", "New Yorc Pilanders"),
-        ("Knight Juggler is back", None),
-        ("Putilinoids", "Zoot's Oddjobs"),
-        ("Dreams of Golden Streams", "Rowdy Vanity Passers"),
-        ("The Jumpy Sproingers", "Practice Makes Permanent"),
-        ("Bare Gills", "Chaos Goes Forth"),
-        ("Major Annoyance", "Marvelous Creatures"),
-        ("Felwithe's Koada'Dal", "Wood United"),
-        ("CHEESE + CAKE ", "Trump's Chumps"),
+        (playoff_index.get(idx), playoff_index.get(idx + 1))
+        for idx in range(1, max(playoff_index.keys()), 2)
     ]
-    predict_playoffs("Season 15 Playoffs", playoff_matches, iterations=100000)
-    print(
-        tabulate.tabulate(
-            list(
-                predictions.query(
-                    """
-                SELECT 
-				    round,
-					"group",
-					FIRST_VALUE(winner) OVER (
-					    PARTITION BY round, "group"
-						ORDER BY count DESC
-					) AS winner,
-					FIRST_VALUE(count) OVER (
-					    PARTITION BY round, "group"
-						ORDER BY count DESC
-					) AS count
-				FROM (
-                    SELECT
-                        round,
-                        ("index"-1)/(1 << round) as "group",
-                        winner,
-                        count(*) AS count
-                    FROM playoffs
-                    JOIN rebbl_playoff_stats ps
-                    ON winner = team
-                    WHERE name='Season 15 Playoffs'
-                    GROUP BY 1, 3
-                    ORDER BY 1 DESC, 2 asc, 4 DESC
-				)
-				GROUP BY 1, 2
-                ORDER BY 2 DESC, 1 ASC
-            """
-                )
-            )
-        )
+    predict_playoffs(
+        name.value,
+        playoff_matches,
+        iterations=iterations,
+        predictor=PREDICTORS[predictor],
     )
-
-
-def main_cc():
-
-    playoff_matches = [
-        ("From Beyond", "Rave'n Skaven!"),
-        ("Get To The Choppah", "High Sea Surfriders"),
-        ("Mønster Bash", "FootBulldogs"),
-        ("Delicious Elves 3.0", "Black Creek Buccaneers"),
-        ("Mass Extinction Event", "Nob Goblins"),
-        ("Toronto Trash Pandas", "Dance Monkeys"),
-        ("Southern Wildlings", "High Toon Hustlers"),
-        ("Crawling Croks", "Chicago Bolshoit"),
-        ("Schnitz and Giggles", "Never Die Twice"),
-        ("The Floating Toads", "The Big Zuccs"),
-        ("West Easton Skittlers", "Scales of Beauty"),
-        ("Khorne Worshipping Doom", "Zoltans Zwords"),
-        ("Da Brute Skwadd", "Flyboys"),
-        ("Melbourne Marauders", "Crawl Contenders"),
-        ("The Horn of Gor'thanc", "Kicker of Elves"),
-        ("The Killer Kings", "Scooby and the Gang"),
-        ("Gorgoth All Grays", "Life After Love"),
-        ("Dark Mode FTW", "WrackleMania"),
-        ("Spooky Action Atavistic", "The Cathartic Carnivores"),
-        ("Apocalypse of Death", "Orcanized Krime"),
-        ("The Lizzardblizzard", "Straight Crooked Wood"),
-        ("The Breton Brawlers", "Unquiet Vertabrae"),
-        ("All rats must DIE again", "ReBBL Klobba Klubb"),
-        ("Skinkin' Ain't Eazy", "Gorgoth Golden Guards"),
-        ("Dull Fangs II", "Noobtown Smasherz"),
-        ("From Tou Till Can", "Dakimakuras"),
-        ("-= Les Fléaux =-", "The Knives of Khaine"),
-        ("Marry Me Bloody Mary X", "Sabertooth Vag 3.0"),
-        ("Pesedjet", "Mongrels of the Empire"),
-        ("Children of Dune", "Dazed N Confused"),
-        ("We're Slaying 'Em", "We See Dead People, Again"),
-        ("The Tiger Lizards", "Gods Of Fate"),
-    ]
-    predict_playoffs("Season 15 Challenger Cup", playoff_matches, iterations=1000)
     results = list(
         predictions.query(
             """
-                SELECT 
-				    round,
-					"group",
-					FIRST_VALUE(winner) OVER (
-					    PARTITION BY round, "group"
-						ORDER BY count DESC
-					) AS winner,
-					FIRST_VALUE(count) OVER (
-					    PARTITION BY round, "group"
-						ORDER BY count DESC
-					) AS count
-				FROM (
+                SELECT
+                    round,
+                    "group",
+                    FIRST_VALUE(winner) OVER (
+                        PARTITION BY round, "group"
+                        ORDER BY count DESC
+                    ) AS winner,
+                    FIRST_VALUE(count) OVER (
+                        PARTITION BY round, "group"
+                        ORDER BY count DESC
+                    ) AS count
+                FROM (
                     SELECT
                         round,
                         ("index"-1)/(1 << round) as "group",
                         winner,
                         count(*) AS count
                     FROM playoffs
-                    JOIN rebbl_cc_stats ps
+                    JOIN rebbl_stats ps
                     ON winner = team
-                    WHERE name='Season 15 Challenger Cup'
+                    AND competition = name
+                    WHERE name=:name
+                    AND predictor=:predictor
                     GROUP BY 1, 3
                     ORDER BY 1 DESC, 2 asc, 4 DESC
-				)
-				GROUP BY 1, 2
+                )
+                GROUP BY 1, 2
                 ORDER BY 1 DESC, 2 ASC
-            """
+            """,
+            name=name.value,
+            predictor=predictor.__name__,
         )
     )
     print(tabulate.tabulate(results))
 
 
 if __name__ == "__main__":
-    main_cc()
+    print(list(Competition))
+    app()
