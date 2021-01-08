@@ -1,19 +1,21 @@
-import requests
+import itertools
 import pprint
 import random
-import itertools
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from collections import defaultdict, Counter
-from sparklines import sparklines
-import tabulate
-from functools import total_ordering
-from typing import Optional, Callable
-import dataset
-from numpy.random import default_rng
-import typer
 from enum import Enum
+from functools import total_ordering
+from typing import Callable, Optional
 
-from _rebbl_predictor import SeasonScore, random_score, Game
+import challonge
+import dataset
+import requests
+import tabulate
+import typer
+from numpy.random import default_rng
+from sparklines import sparklines
+
+from _rebbl_predictor import Game, SeasonScore, random_score
 
 predictions = dataset.connect("sqlite:///predictions.db")
 rebbl_stats = predictions["rebbl_stats"]
@@ -585,6 +587,84 @@ def predict_offseason(
     print(tabulate.tabulate(results))
 
 
+class Tournament(Enum):
+    Playoff15 = "po15"
+    ChalCup15 = "cc15"
+
+
+REBBL_IDS = {
+    Tournament.Playoff15: "REBBL Playoffs Season 15",
+    Tournament.ChalCup15: "Challenger's Cup XV",
+}
+
+CHALLONGE_IDS = {
+    Tournament.ChalCup15: 9289905,
+    Tournament.Playoff15: 9289820,
+}
+
+
+@app.command()
+def sync_challonge(
+    tournament: Tournament,
+    username: str = typer.Option(None, prompt=True),
+    api_key: str = typer.Option(None, prompt=True),
+):
+    print(f"Updating {tournament}")
+    challonge.set_credentials(username, api_key)
+    chal_matches = challonge.matches.index(CHALLONGE_IDS[tournament])
+    chal_participants = challonge.participants.index(CHALLONGE_IDS[tournament])
+    participant_ids = {
+        participant["name"].split(" - ")[0].lower(): participant["id"]
+        for participant in chal_participants
+    }
+    chal_match_ids = {
+        (match["player1_id"], match["player2_id"]): (
+            match["id"],
+            match["scores_csv"],
+            match["winner_id"],
+        )
+        for match in chal_matches
+    }
+
+    playoff_games = playoff(REBBL_IDS[tournament])
+    completed_rebbl_matches = [
+        (
+            (
+                match["opponents"][0]["team"]["name"],
+                match["opponents"][0]["team"]["score"],
+            ),
+            (
+                match["opponents"][1]["team"]["name"],
+                match["opponents"][1]["team"]["score"],
+            ),
+            match["winner"]["team"]["name"],
+        )
+        for round in playoff_games["matches"].values()
+        for match in round
+        if match.get("winner")
+    ]
+
+    print(f"Found {len(completed_rebbl_matches)} matches")
+    for ((home, home_score), (away, away_score), winner) in completed_rebbl_matches:
+        match_id, scores, winner_id = chal_match_ids[
+            (participant_ids[home.lower()], participant_ids[away.lower()])
+        ]
+        if (
+            not scores
+            or [int(score) for score in scores.split("-")] != [home_score, away_score]
+            or participant_ids[winner.lower()] != winner_id
+        ):
+            print(
+                home, home_score, away, away_score, winner, match_id, scores, winner_id
+            )
+            print(f"Updating {home}/{away} to {home_score}-{away_score}")
+            challonge.matches.update(
+                CHALLONGE_IDS[tournament],
+                match_id,
+                scores_csv=f'{home_score}-{away_score}',
+                winner_id=participant_ids[winner.lower()],
+            )
+
+
 if __name__ == "__main__":
-    print(list(Competition))
     app()

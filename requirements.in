@@ -10,3 +10,4 @@ numpy
 typer
 ipython
 jedi==0.17.2
+pychal
