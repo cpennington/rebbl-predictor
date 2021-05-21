@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import itertools
 import pprint
 import random
@@ -83,8 +85,13 @@ def score_season(games, initial_scores=None):
 
 def predict_games(predictor, games):
     for game in games:
-        game.homeScore = predictor(game.homeTeam)
-        game.awayScore = predictor(game.awayTeam)
+        winner, td = predictor(game.homeTeam, game.awayTeam)
+        if winner == game.homeTeam:
+            game.homeScore = td
+            game.awayScore = -td
+        else:
+            game.homeScore = -td
+            game.awayScore = td
 
 
 def sum_stats(teams, old, new):
@@ -110,7 +117,7 @@ def season_teams(games):
     }
 
 
-def predict_season(
+def _predict_season(
     league: str,
     season: str,
     division: str,
@@ -434,10 +441,19 @@ def games(league, season, division):
 def playoff(playoff):
     return requests.get(f"https://rebbl.net/api/v1/playoffs/{playoff}").json()
 
+def _random_score(home, away):
+    homeScore = random_score(home)
+    awayScore = random_score(away)
+    if homeScore > awayScore:
+        return home, homeScore - awayScore
+    else:
+        return away, homeScore - awayScore
+
 
 PREDICTORS = {
-    predictor.__name__: predictor
-    for predictor in (predict_from_beta_dist, predict_from_stats, random_score)
+    'predict_from_beta_dist': predict_from_beta_dist,
+    'predict_from_stats': predict_from_stats,
+    'random_score': _random_score,
 }
 
 Predictor = Enum("Predictor", {f: f for f in PREDICTORS.keys()})
@@ -472,13 +488,13 @@ def predict_season(
                 actual_league = f"{league} 2"
             if "Big O" in league and "Div 3" in division:
                 actual_division = f"{division} "
-            results_table = predict_season(
+            results_table = _predict_season(
                 actual_league,
                 season,
                 actual_division,
                 iterations=iterations,
                 as_of=as_of,
-                predictor=PREDICTORS[predictor],
+                predictor=PREDICTORS[predictor.value],
             )
             team_order = [
                 team
@@ -590,16 +606,22 @@ def predict_offseason(
 class Tournament(Enum):
     Playoff15 = "po15"
     ChalCup15 = "cc15"
+    Playoff16 = "po16"
+    ChalCup16 = "cc16"
 
 
 REBBL_IDS = {
     Tournament.Playoff15: "REBBL Playoffs Season 15",
     Tournament.ChalCup15: "Challenger's Cup XV",
+    Tournament.Playoff16: "REBBL Playoffs Season 16",
+    Tournament.ChalCup16: "Challenger's Cup XVI",
 }
 
 CHALLONGE_IDS = {
     Tournament.ChalCup15: 9289905,
     Tournament.Playoff15: 9289820,
+    Tournament.Playoff16: 9823214,
+    Tournament.ChalCup16: 9823264,
 }
 
 
