@@ -117,8 +117,8 @@ def sync_challonge(
         ]
         if (
             not scores
-            or [int(score) for score in scores.split("-")] != [home_score, away_score]
-            or participant_ids.get(winner.lower()) != winner_id
+            # or [int(score) for score in scores.split("-")] != [home_score, away_score]
+            # or participant_ids.get(winner.lower()) != winner_id
         ):
             print(
                 home, home_score, away, away_score, winner, match_id, scores, winner_id
